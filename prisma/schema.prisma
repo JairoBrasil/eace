@@ -1,0 +1,249 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────── Rede (multi-tenant em árvore) ─────────
+
+enum OrgType {
+  FABRICA
+  DISTRIBUIDOR
+  PARCEIRO
+}
+
+enum Role {
+  ADMIN    // administrador da organização (pode alterar valores)
+  GESTOR   // opera OS e acompanha a rede
+  TECNICO  // executa OS em campo
+}
+
+model Org {
+  id        String   @id @default(cuid())
+  type      OrgType
+  name      String
+  document  String?  // CNPJ/CPF
+  parentId  String?
+  parent    Org?     @relation("OrgTree", fields: [parentId], references: [id])
+  children  Org[]    @relation("OrgTree")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  users        User[]
+  serviceTypes ServiceType[]
+  advances     Advance[]
+  ledger       LedgerEntry[]
+
+  @@index([parentId])
+}
+
+model User {
+  id           String   @id @default(cuid())
+  orgId        String
+  org          Org      @relation(fields: [orgId], references: [id])
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         Role
+  mustChangePw Boolean  @default(true)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  assignedOrders WorkOrder[]
+  photos         Photo[]
+  trackPoints    TrackPoint[]
+
+  @@index([orgId])
+}
+
+// ───────── Catálogo de serviços e etapas ─────────
+
+enum StepKind {
+  FOTO_OBRIGATORIA
+  FOTO_OPCIONAL
+  TEXTO
+  CHECKBOX
+  ASSINATURA
+  SELECAO_MULTIPLA
+  NUMERO
+  CHECKLIST
+  DOCUMENTO
+}
+
+model ServiceType {
+  id          String   @id @default(cuid())
+  factoryId   String
+  factory     Org      @relation(fields: [factoryId], references: [id])
+  name        String
+  description String?
+  defaultValue Decimal @default(0) @db.Decimal(12, 2) // valor a pagar ao parceiro
+  slaHours    Int      @default(48)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  steps  StepTemplate[]
+  orders WorkOrder[]
+
+  @@index([factoryId])
+}
+
+model StepTemplate {
+  id            String      @id @default(cuid())
+  serviceTypeId String
+  serviceType   ServiceType @relation(fields: [serviceTypeId], references: [id], onDelete: Cascade)
+  position      Int
+  title         String
+  kind          StepKind
+  required      Boolean     @default(true)
+  config        Json?       // opções, validações (min/max, itens do checklist...)
+
+  @@unique([serviceTypeId, position])
+}
+
+// ───────── Ordens de serviço ─────────
+
+enum OrderStatus {
+  ABERTA
+  AGENDADA
+  EM_DESLOCAMENTO
+  EM_ANDAMENTO
+  AGUARDANDO_VALIDACAO
+  REPROVADA
+  CONCLUIDA
+  CANCELADA
+}
+
+model WorkOrder {
+  id            String      @id @default(cuid())
+  number        Int         @unique @default(autoincrement())
+  serviceTypeId String
+  serviceType   ServiceType @relation(fields: [serviceTypeId], references: [id])
+
+  factoryId     String
+  distributorId String?
+  partnerId     String?
+  technicianId  String?
+  technician    User?       @relation(fields: [technicianId], references: [id])
+
+  customerName  String
+  customerPhone String?
+  address       String
+  latitude      Float?
+  longitude     Float?
+
+  status        OrderStatus @default(ABERTA)
+  openedAt      DateTime    @default(now())
+  scheduledAt   DateTime?
+  slaDueAt      DateTime?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  validatedAt   DateTime?
+
+  // valor a pagar ao parceiro: padrão vem do serviço; admin pode sobrescrever
+  serviceValue        Decimal  @db.Decimal(12, 2)
+  valueOverriddenById String?
+  valueOverrideReason String?
+
+  steps   OrderStep[]
+  photos  Photo[]
+  track   TrackPoint[]
+  ledger  LedgerEntry[]
+
+  @@index([partnerId, status])
+  @@index([technicianId, status])
+  @@index([distributorId])
+}
+
+// Etapas copiadas do template no momento da abertura (o template pode mudar depois)
+model OrderStep {
+  id          String    @id @default(cuid())
+  orderId     String
+  order       WorkOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  position    Int
+  title       String
+  kind        StepKind
+  required    Boolean
+  config      Json?
+  value       Json?
+  completedAt DateTime?
+  latitude    Float?
+  longitude   Float?
+
+  photos Photo[]
+
+  @@unique([orderId, position])
+}
+
+model Photo {
+  id        String     @id @default(cuid())
+  orderId   String
+  order     WorkOrder  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  stepId    String?
+  step      OrderStep? @relation(fields: [stepId], references: [id])
+  userId    String
+  user      User       @relation(fields: [userId], references: [id])
+  path      String     // arquivo já com marca d'água
+  sha256    String
+  latitude  Float
+  longitude Float
+  takenAt   DateTime
+
+  @@index([orderId])
+}
+
+model TrackPoint {
+  id         String    @id @default(cuid())
+  orderId    String
+  order      WorkOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  latitude   Float
+  longitude  Float
+  accuracy   Float?
+  recordedAt DateTime
+
+  @@index([orderId, recordedAt])
+}
+
+// ───────── Financeiro do parceiro ─────────
+
+enum LedgerType {
+  SERVICO      // +  crédito gerado por OS concluída
+  ABATIMENTO   // -  adiantamento descontado na conclusão da OS
+  PAGAMENTO    // -  pagamento efetuado ao parceiro
+  AJUSTE       // ±  correção manual (exige motivo)
+}
+
+model Advance {
+  id        String   @id @default(cuid())
+  partnerId String
+  partner   Org      @relation(fields: [partnerId], references: [id])
+  amount    Decimal  @db.Decimal(12, 2)
+  applied   Decimal  @default(0) @db.Decimal(12, 2) // já abatido em OS concluídas
+  paidAt    DateTime
+  note      String?
+  createdBy String
+  createdAt DateTime @default(now())
+
+  @@index([partnerId])
+}
+
+// Razão imutável: nunca editar/apagar; corrigir com AJUSTE.
+// Saldo a receber do parceiro = soma de `amount`.
+model LedgerEntry {
+  id        String     @id @default(cuid())
+  partnerId String
+  partner   Org        @relation(fields: [partnerId], references: [id])
+  orderId   String?
+  order     WorkOrder? @relation(fields: [orderId], references: [id])
+  type      LedgerType
+  amount    Decimal    @db.Decimal(12, 2) // com sinal
+  note      String?
+  createdBy String?
+  createdAt DateTime   @default(now())
+
+  @@index([partnerId, createdAt])
+}
