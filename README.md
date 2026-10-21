@@ -23,3 +23,11 @@ npm run dev
 Bloco `apps.operaos` do `config.json`: `previewHook` e `promoteHook` = `npx prisma migrate deploy`,
 `healthPath` = `/api/health`, `previewUrlVars` = `["APP_URL"]`. Bancos `operaos` e `operaos_staging`.
 Fotos gravadas em `UPLOAD_DIR` (fora de `releases/`, que é apagada a cada deploy).
+
+## Primeiro acesso
+Variável obrigatória: `AUTH_SECRET` (16+ caracteres) no `.env.production` e no `.env.preview`.
+Criar o primeiro admin (como jairo, na pasta do release ou local):
+```bash
+node scripts/criar-admin.mjs "Nome da Fábrica" email@dominio "Nome" senhaProvisoria
+```
+O usuário é obrigado a trocar a senha no primeiro login. Trocar senha ou desativar o usuário derruba as sessões abertas.
